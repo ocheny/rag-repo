@@ -1,0 +1,25 @@
+# Python/venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv*/
+venv*/
+env*/
+venvrag/
+
+# Entornos/variables
+.env
+
+# Model cache y artefactos
+backend/store/**
+!backend/store/
+!backend/store/.gitkeep
+
+backend/assets/**
+!backend/assets/
+!backend/assets/.gitkeep
+
+# Archivos pesados puntuales
+*.rar
+*.zip

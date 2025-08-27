@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic
+python-multipart
+faiss-cpu
+numpy
+pillow
+pymupdf
+transformers
+torch
+sentence-transformers
+rank_bm25
+gradio
+requests
+groq
