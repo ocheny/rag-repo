@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+pydantic
+python-multipart
+faiss-cpu
+numpy
+pillow
+pymupdf
+transformers==4.55.4
+sentence-transformers==5.1.0
+rank_bm25
+groq
+python-dotenv
+requests

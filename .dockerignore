@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv*/
+env*/
+venvrag/
+
+# Git
+.git
+.gitignore
+
+# Entornos/variables
+.env
+
+# Datos generados
+backend/store/**
+!backend/store/
+!backend/store/.gitkeep
+
+backend/assets/**
+!backend/assets/
+!backend/assets/.gitkeep
+
+# Archivos grandes
+*.zip
+*.rar
+
+# Frontend build (si alguna vez usas)
+node_modules/
+dist/
+build/
