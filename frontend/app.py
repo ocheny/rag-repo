@@ -2,7 +2,7 @@ import os
 import gradio as gr
 import requests
 
-API = os.getenv("API", "http://127.0.0.1:8000")
+API = os.getenv("API", "https://rag-repo-production.up.railway.app")
 
 def up(pdf):
     files = {"pdf": (pdf.name, open(pdf.name, "rb"), "application/pdf")}
@@ -35,5 +35,6 @@ with gr.Blocks(title="Chatbot RAG Multimodal") as demo:
         out_imgs = gr.Gallery(label="Imágenes relevantes", columns=3, height=300)
         ask_btn = gr.Button("Preguntar")
         ask_btn.click(ask, inputs=[q, k1, k2], outputs=[out_txt, out_imgs])
+
 
 demo.launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "7860")))
