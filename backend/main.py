@@ -1,64 +1,117 @@
-from fastapi import FastAPI, UploadFile, File, Form
+# backend/main.py
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from dotenv import load_dotenv
+from uuid import uuid4
+import os
+from typing import Dict, Any
+
 from backend.ingest import extract_pdf, build_corpus
 from backend.retriever import Retriever
 from backend.llm import answer_with_llm
-from fastapi.middleware.cors import CORSMiddleware
+
+load_dotenv()
 
 app = FastAPI(title="RAG Multimodal (PDF)")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"]
+    allow_methods=["*"], allow_headers=["*"],
 )
-
-load_dotenv()  # lee .env en la raíz del proyecto
 
 DATA = Path("backend/store")
 ASSETS = Path("backend/assets")
 DATA.mkdir(parents=True, exist_ok=True)
 ASSETS.mkdir(parents=True, exist_ok=True)
 
-# Servir imágenes extraídas del PDF
+# Sirve las imágenes extraídas
 app.mount("/images", StaticFiles(directory=str(ASSETS)), name="images")
 
-RET = None
+# Estado global simple (memoria del proceso)
+RET: Retriever | None = None
 CORPUS = []
+JOBS: Dict[str, Dict[str, Any]] = {}   # job_id -> {status, detail, result|error}
+
+ENABLE_IMAGES = os.getenv("ENABLE_IMAGES", "1") not in ("0", "false", "False")
+
+@app.get("/")
+def root():
+    return {"ok": True, "docs": "/docs", "health": "/health"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+def _process_pdf(pdf_path: Path, job_id: str):
+    """Trabajo pesado: extraer, indexar y dejar listo el retriever."""
+    global RET, CORPUS
+    try:
+        JOBS[job_id] = {"status": "running", "detail": "Parsing PDF…"}
+        parsed = extract_pdf(str(pdf_path), str(ASSETS))
+
+        JOBS[job_id] = {"status": "running", "detail": "Building corpus…"}
+        CORPUS = build_corpus(parsed)
+
+        # Crea (o reutiliza) el retriever y construye índices
+        if RET is None:
+            RET = Retriever(str(ASSETS))
+        JOBS[job_id] = {"status": "running", "detail": "Indexing embeddings…"}
+        RET.build(CORPUS if ENABLE_IMAGES else [c for c in CORPUS if c.get("type") == "text"])
+
+        pages = len({t["page"] for t in parsed["text"]})
+        result = {"pages": pages, "images": len(parsed["images"])}
+        JOBS[job_id] = {"status": "done", "result": result}
+    except Exception as e:
+        JOBS[job_id] = {"status": "error", "error": str(e)}
 
 @app.post("/ingest")
-async def ingest(pdf: UploadFile = File(...)):
+async def ingest(background: BackgroundTasks, pdf: UploadFile = File(...)):
     """
-    Sube y procesa el PDF: extrae texto e imágenes, crea índices.
+    Sube y procesa el PDF en segundo plano para evitar timeouts de Railway.
+    Devuelve un job_id para consultar /status.
     """
-    global RET, CORPUS
+    job_id = uuid4().hex
     pdf_path = DATA / pdf.filename
-    pdf_bytes = await pdf.read()
-    pdf_path.write_bytes(pdf_bytes)
+    pdf_path.write_bytes(await pdf.read())
 
-    parsed = extract_pdf(str(pdf_path), str(ASSETS))
-    CORPUS = build_corpus(parsed)
+    JOBS[job_id] = {"status": "queued", "detail": "Scheduled"}
+    background.add_task(_process_pdf, pdf_path, job_id)
 
-    RET = Retriever(str(ASSETS))
-    RET.build(CORPUS)
+    return {"status": "processing", "job_id": job_id, "note": "Consulta /status?job_id=... para ver progreso"}
 
-    pages = len({t["page"] for t in parsed["text"]})
-    return {"pages": pages, "images": len(parsed["images"])}
+@app.get("/status")
+def status(job_id: str):
+    """Consulta el progreso de /ingest (queued|running|done|error)."""
+    data = JOBS.get(job_id)
+    if not data:
+        return {"status": "unknown", "error": "job_id no encontrado"}
+    return data
 
 @app.post("/query")
 async def query(q: str = Form(...), k_text: int = Form(5), k_img: int = Form(3)):
     """
     Busca pasajes e imágenes relevantes y responde con Groq + citas.
     """
+    global RET
     if RET is None:
-        return {"error": "Primero ingesta el PDF en /ingest"}
+        return {"error": "Primero procesa un PDF en /ingest"}
+
+    # Limita rangos para evitar abusos
+    k_text = max(1, min(int(k_text), 10))
+    k_img = 0 if not ENABLE_IMAGES else max(0, min(int(k_img), 6))
 
     res = RET.search(q, k_text=k_text, k_img=k_img)
-    contexts = [r["content"] for r in res["text"]]
-    answer = answer_with_llm(q, contexts)
+    text_hits = res.get("text", [])
+    img_hits = res.get("images", [])
 
-    imgs = [{"page":i["page"], "url": f"/images/{i['file']}", "score": i["score"]} for i in res["images"]]
-    cites = [{"page":t["page"], "preview": t["content"][:140]+"…"} for t in res["text"]]
+    contexts = [r["content"] for r in text_hits if r.get("content")]
+    answer = answer_with_llm(q, contexts) if contexts else (
+        "No encontré pasajes de texto relevantes en el documento para responder."
+    )
+
+    imgs = [{"page": i["page"], "url": f"/images/{i['file']}", "score": i["score"]} for i in img_hits]
+    cites = [{"page": t["page"], "preview": t["content"][:140] + "…"} for t in text_hits]
 
     return {"answer": answer, "citations": cites, "images": imgs}
