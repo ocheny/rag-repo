@@ -100,10 +100,11 @@ with gr.Blocks(title="RAG Multimodal (PDF)") as demo:
         with gr.Column(scale=1, visible=False) as results_col:
             answer = gr.Markdown(label="Respuesta")
             citations = gr.Textbox(label="Citas (texto)", lines=8)
-            gallery = gr.Gallery(label="Imágenes relevantes").style(grid=2, height=400)
+            gallery = gr.Gallery(label="Imágenes relevantes", columns=2, height=400)
     ingest_btn.click(fn=ingest_pdf, inputs=[pdf], outputs=[ingest_msg, results_col])
     ask_btn.click(fn=ask_query, inputs=[query_box, k_text, k_img], outputs=[answer, citations, gallery])
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "7860"))
     demo.queue().launch(server_name="0.0.0.0", server_port=port, show_api=False)
+
