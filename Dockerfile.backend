@@ -5,24 +5,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     PIP_NO_CACHE_DIR=1
 
-# Dependencias del sistema mínimas (pillow, fitz)
+# Paquetes del sistema mínimos (para pillow/fitz)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libglib2.0-0 \
-    libgl1 \
+    libglib2.0-0 libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Instala Torch **CPU** (evita CUDA gigante)
-# Usa la rueda oficial CPU de PyTorch
+# 1) Instala **Torch CPU 2.6** desde el índice oficial de CPU (evita CUDA y los nvidia-*)
 RUN python -m pip install --upgrade pip && \
-    pip install --index-url https://download.pytorch.org/whl/cpu torch==2.3.1+cpu
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.6.0+cpu
 
-# Reqs del backend (sin torch)
+# 2) Instala el resto de dependencias del backend (sin torch)
 COPY requirements.backend.txt .
-RUN pip install -r requirements.backend.txt
+RUN pip install --no-cache-dir -r requirements.backend.txt
 
-# Código backend
+# 3) Copia el código
 COPY backend ./backend
 
 EXPOSE 8000
