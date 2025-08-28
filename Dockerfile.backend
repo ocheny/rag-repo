@@ -12,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TOKENIZERS_PARALLELISM=false \
     OMP_NUM_THREADS=1
 
-# libs mínimas para pillow/fitz
+# libs mínimas para pillow/fitz + OCR
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libgl1 tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
@@ -27,15 +27,11 @@ RUN python -m pip install --upgrade pip && \
 COPY requirements.backend.txt .
 RUN pip install --no-cache-dir -r requirements.backend.txt
 
-# ── Código
+# ── Código + modelos locales
 COPY backend ./backend
 
-# ── Crea la carpeta de cache en build (evita race al inicio)
+# ── Crea la carpeta de cache en build
 RUN mkdir -p /app/backend/store/hf_cache
 
-# 🚀 Fuerza la descarga del modelo en build time
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', cache_folder='/app/backend/store/hf_cache')"
-
-# Railway suele inyectar $PORT=8080; si no existe, usa 8000
 EXPOSE 8080
 CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1
