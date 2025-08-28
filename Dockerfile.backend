@@ -4,7 +4,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     PIP_NO_CACHE_DIR=1 \
-    # ==== HF cache consistente dentro del contenedor ====
     HF_HOME=/app/backend/store/hf_cache \
     TRANSFORMERS_CACHE=/app/backend/store/hf_cache \
     HUGGINGFACE_HUB_CACHE=/app/backend/store/hf_cache \
@@ -15,7 +14,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # libs mínimas para pillow/fitz
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libglib2.0-0 libgl1 \
+    libglib2.0-0 libgl1 tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -33,6 +32,9 @@ COPY backend ./backend
 
 # ── Crea la carpeta de cache en build (evita race al inicio)
 RUN mkdir -p /app/backend/store/hf_cache
+
+# 🚀 Fuerza la descarga del modelo en build time
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', cache_folder='/app/backend/store/hf_cache')"
 
 # Railway suele inyectar $PORT=8080; si no existe, usa 8000
 EXPOSE 8080
