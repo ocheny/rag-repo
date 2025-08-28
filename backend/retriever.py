@@ -25,25 +25,27 @@ if ENABLE_IMAGES:
     from transformers import CLIPProcessor, CLIPModel
     from PIL import Image
 
+
 class Retriever:
     def __init__(self, assets_dir: str):
         self.assets = Path(assets_dir)
 
-        # ---- Embeddings de texto (cache local + sin token) ----
+        # ---- Embeddings de texto (primero local, luego online) ----
+        model_local_path = Path("backend/models/all-MiniLM-L6-v2")
         try:
-            self.text_model = SentenceTransformer(
-                "sentence-transformers/all-MiniLM-L6-v2",
-                cache_folder=CACHE_DIR,
-                token=None,
-            )
-        except Exception:
-            for k in ["TRANSFORMERS_CACHE", "HF_HOME", "HUGGINGFACE_HUB_CACHE"]:
-                os.environ.pop(k, None)
-            self.text_model = SentenceTransformer(
-                "sentence-transformers/all-MiniLM-L6-v2",
-                cache_folder=CACHE_DIR,
-                token=None,
-            )
+            if model_local_path.exists():
+                print(f"[INFO] Cargando modelo local desde {model_local_path}")
+                self.text_model = SentenceTransformer(str(model_local_path))
+            else:
+                print("[INFO] Cargando modelo desde HuggingFace Hub")
+                self.text_model = SentenceTransformer(
+                    "sentence-transformers/all-MiniLM-L6-v2",
+                    cache_folder=CACHE_DIR,
+                    token=None,
+                )
+        except Exception as e:
+            print(f"[ERROR] No se pudo cargar el modelo: {e}")
+            raise
 
         self.text_index = None
         self.text_meta = []
@@ -52,20 +54,34 @@ class Retriever:
         # ---- CLIP para imágenes (solo si está activado) ----
         self.use_images = ENABLE_IMAGES
         if self.use_images:
-            self.clip_model = CLIPModel.from_pretrained(
-                "openai/clip-vit-base-patch32", cache_dir=CACHE_DIR, token=None
-            )
-            self.clip_proc = CLIPProcessor.from_pretrained(
-                "openai/clip-vit-base-patch32", cache_dir=CACHE_DIR, token=None
-            )
-            self.image_index = None
-            self.image_meta = []
+            try:
+                self.clip_model = CLIPModel.from_pretrained(
+                    "openai/clip-vit-base-patch32",
+                    cache_dir=CACHE_DIR,
+                    token=None,
+                )
+                self.clip_proc = CLIPProcessor.from_pretrained(
+                    "openai/clip-vit-base-patch32",
+                    cache_dir=CACHE_DIR,
+                    token=None,
+                )
+                self.image_index = None
+                self.image_meta = []
+            except Exception as e:
+                print(f"[WARN] No se pudo cargar CLIP: {e}")
+                self.use_images = False
+                self.image_index = None
+                self.image_meta = []
         else:
             self.image_index = None
             self.image_meta = []
 
     def _embed_text(self, texts):
-        embs = self.text_model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
+        embs = self.text_model.encode(
+            texts,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+        )
         return embs.astype("float32")
 
     # Métodos de imagen solo si está activado
@@ -79,7 +95,12 @@ class Retriever:
             return feats.detach().cpu().numpy().astype("float32")
 
         def _embed_text_clip(self, texts):
-            inputs = self.clip_proc(text=texts, return_tensors="pt", padding=True, truncation=True)
+            inputs = self.clip_proc(
+                text=texts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+            )
             with torch.no_grad():
                 feats = self.clip_model.get_text_features(**inputs)
                 feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
