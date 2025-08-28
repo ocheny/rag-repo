@@ -7,6 +7,7 @@ from typing import Dict, List
 import pytesseract
 
 
+
 def _clean_text(t: str) -> str:
     # Limpieza suave para evitar basura y huecos
     t = t.replace("\x00", " ")
