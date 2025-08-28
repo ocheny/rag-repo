@@ -3,25 +3,37 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    # ==== HF cache consistente dentro del contenedor ====
+    HF_HOME=/app/backend/store/hf_cache \
+    TRANSFORMERS_CACHE=/app/backend/store/hf_cache \
+    HUGGINGFACE_HUB_CACHE=/app/backend/store/hf_cache \
+    HF_HUB_DISABLE_SYMLINKS_WARNING=1 \
+    HF_HUB_ENABLE_HF_TRANSFER=1 \
+    TOKENIZERS_PARALLELISM=false \
+    OMP_NUM_THREADS=1
 
-# Paquetes del sistema mínimos (para pillow/fitz)
+# libs mínimas para pillow/fitz
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# 1) Instala **Torch CPU 2.6** desde el índice oficial de CPU (evita CUDA y los nvidia-*)
+# ── Torch CPU 2.6 (evita CUDA y nvidia-*)
 RUN python -m pip install --upgrade pip && \
     pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.6.0+cpu
 
-# 2) Instala el resto de dependencias del backend (sin torch)
+# ── Resto deps (sin torch)
 COPY requirements.backend.txt .
 RUN pip install --no-cache-dir -r requirements.backend.txt
 
-# 3) Copia el código
+# ── Código
 COPY backend ./backend
 
-EXPOSE 8000
-CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}
+# ── Crea la carpeta de cache en build (evita race al inicio)
+RUN mkdir -p /app/backend/store/hf_cache
+
+# Railway suele inyectar $PORT=8080; si no existe, usa 8000
+EXPOSE 8080
+CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1
