@@ -3,12 +3,12 @@ import fitz  # PyMuPDF
 from PIL import Image
 import io
 import re
-from typing import Dict, List
 import pytesseract
+from typing import Dict, List
 
 
 def _clean_text(t: str) -> str:
-    # Limpieza suave para evitar basura y huecos
+    # Limpieza suave para evitar basura
     t = t.replace("\x00", " ")
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{2,}", "\n", t)
@@ -17,9 +17,8 @@ def _clean_text(t: str) -> str:
 
 def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str, List[dict]]:
     """
-    Extrae TEXTO + IMÁGENES del PDF.
-    Devuelve {"text":[{page,text}], "images":[{page,file}]}
-    Si no hay texto digital, aplica OCR sobre la página.
+    Extrae TEXTO (con OCR si es necesario) + IMÁGENES del PDF.
+    Devuelve {"text":[{page,text}], "images":[{page,file}]}.
     """
     doc = fitz.open(pdf_path)
     out = {"text": [], "images": []}
@@ -27,11 +26,11 @@ def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for pno, page in enumerate(doc, start=1):
-        # 1) Intento directo
+        # --- Texto ---
         text = _clean_text(page.get_text("text") or "")
 
-        # 2) Fallback por bloques
-        if not text:
+        # fallback por bloques si está vacío
+        if not text.strip():
             blocks = page.get_text("blocks") or []
             txt_blocks = []
             for b in blocks:
@@ -39,7 +38,7 @@ def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str
                     txt_blocks.append(b[4])
             text = _clean_text("\n".join(txt_blocks))
 
-        # 3) Fallback final con OCR si sigue vacío
+        # OCR si aún vacío
         if not text.strip():
             pix = page.get_pixmap()
             img = Image.open(io.BytesIO(pix.tobytes("png")))
@@ -57,28 +56,29 @@ def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str
 
         out["text"].append({"page": pno, "text": text or ""})
 
-        # Guardar imágenes extraídas
+        # --- Imágenes ---
         for idx, img in enumerate(page.get_images(full=True)):
-            xref = img[0]
-            pix = fitz.Pixmap(doc, xref)
-            if pix.alpha:  # elimina canal alpha si existe
-                pix = fitz.Pixmap(pix, 0)
-            img_bytes = pix.tobytes("png")
-            fname = f"page{pno}_img{idx+1}.png"
-            (out_dir / fname).write_bytes(img_bytes)
-            # verificación rápida
             try:
+                xref = img[0]
+                pix = fitz.Pixmap(doc, xref)
+                if pix.alpha:  # elimina canal alpha si existe
+                    pix = fitz.Pixmap(pix, 0)
+                img_bytes = pix.tobytes("png")
+                fname = f"page{pno}_img{idx+1}.png"
+                (out_dir / fname).write_bytes(img_bytes)
+                # Forzar verificación mínima
                 Image.open(io.BytesIO(img_bytes)).verify()
-            except Exception:
-                print(f"[WARN] Imagen corrupta en página {pno}")
-            out["images"].append({"page": pno, "file": fname})
+                out["images"].append({"page": pno, "file": fname})
+                if debug:
+                    print(f"[DEBUG] Imagen extraída: {fname} (página {pno})")
+            except Exception as e:
+                print(f"[WARN] Imagen corrupta en página {pno}: {e}")
 
     doc.close()
     return out
 
 
 def chunk_text(text: str, chunk_size=800, overlap=100):
-    # Chunking por PALABRAS (robusto a idiomas); evita trozos vacíos
     words = text.split()
     if not words:
         return []
@@ -94,11 +94,11 @@ def chunk_text(text: str, chunk_size=800, overlap=100):
 
 def build_corpus(parsed: Dict[str, List[dict]]):
     corpus = []
-    # Primero texto
+    # Texto
     for item in parsed["text"]:
         for ch in chunk_text(item.get("text", "")):
             corpus.append({"type": "text", "page": item["page"], "content": ch})
-    # Luego imágenes
+    # Imágenes
     for im in parsed["images"]:
         corpus.append({"type": "image", "page": im["page"], "file": im["file"]})
     return corpus
