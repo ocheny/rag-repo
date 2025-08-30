@@ -94,6 +94,16 @@ def status(job_id: str):
     if not data:
         return {"status": "unknown", "error": "job_id no encontrado"}
     return data
+    
+@app.get("/debug/images")
+def debug_images():
+    global RET
+    if RET is None:
+        return {"error": "Retriever no inicializado"}
+    return {
+        "indexed_images": len(RET.image_meta),
+        "files": [im["file"] for im in RET.image_meta]
+    }
 
 
 @app.post("/query")
@@ -129,3 +139,4 @@ async def query(q: str = Form(...), k_text: int = Form(5), k_img: int = Form(3))
     ]
 
     return {"answer": answer, "citations": cites, "images": imgs}
+
