@@ -1,5 +1,5 @@
 import os
-# Nunca enviar tokens de HF por error
+# Blindaje para no enviar tokens de HuggingFace por error
 for k in [
     "HF_TOKEN",
     "HUGGINGFACEHUB_API_TOKEN",
@@ -16,14 +16,10 @@ from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
 from pathlib import Path
 import torch
+from transformers import CLIPProcessor, CLIPModel
+from PIL import Image
 
-ENABLE_IMAGES = os.getenv("ENABLE_IMAGES", "1").lower() not in ("0", "false", "no")
 CACHE_DIR = str(Path("backend/store/hf_cache").absolute())
-
-# Carga perezosa de CLIP (solo si ENABLE_IMAGES=1)
-if ENABLE_IMAGES:
-    from transformers import CLIPProcessor, CLIPModel
-    from PIL import Image
 
 
 class Retriever:
@@ -51,28 +47,24 @@ class Retriever:
         self.text_meta = []
         self.bm25 = None
 
-        # ---- CLIP para imágenes (solo si está activado) ----
-        self.use_images = ENABLE_IMAGES
-        if self.use_images:
-            try:
-                self.clip_model = CLIPModel.from_pretrained(
-                    "openai/clip-vit-base-patch32",
-                    cache_dir=CACHE_DIR,
-                    token=None,
-                )
-                self.clip_proc = CLIPProcessor.from_pretrained(
-                    "openai/clip-vit-base-patch32",
-                    cache_dir=CACHE_DIR,
-                    token=None,
-                )
-                self.image_index = None
-                self.image_meta = []
-            except Exception as e:
-                print(f"[WARN] No se pudo cargar CLIP: {e}")
-                self.use_images = False
-                self.image_index = None
-                self.image_meta = []
-        else:
+        # ---- CLIP siempre activado para imágenes ----
+        try:
+            self.clip_model = CLIPModel.from_pretrained(
+                "openai/clip-vit-base-patch32",
+                cache_dir=CACHE_DIR,
+                token=None,
+            )
+            self.clip_proc = CLIPProcessor.from_pretrained(
+                "openai/clip-vit-base-patch32",
+                cache_dir=CACHE_DIR,
+                token=None,
+            )
+            self.image_index = None
+            self.image_meta = []
+            self.use_images = True
+        except Exception as e:
+            print(f"[WARN] No se pudo cargar CLIP: {e}")
+            self.use_images = False
             self.image_index = None
             self.image_meta = []
 
@@ -84,31 +76,31 @@ class Retriever:
         )
         return embs.astype("float32")
 
-    # Métodos de imagen solo si está activado
-    if ENABLE_IMAGES:
-        def _embed_image_paths(self, paths):
-            images = [Image.open(self.assets / p).convert("RGB") for p in paths]
-            inputs = self.clip_proc(images=images, return_tensors="pt")
-            with torch.no_grad():
-                feats = self.clip_model.get_image_features(**inputs)
-                feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
-            return feats.detach().cpu().numpy().astype("float32")
+    def _embed_image_paths(self, paths):
+        images = [Image.open(self.assets / p).convert("RGB") for p in paths]
+        inputs = self.clip_proc(images=images, return_tensors="pt")
+        with torch.no_grad():
+            feats = self.clip_model.get_image_features(**inputs)
+            feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
+        return feats.detach().cpu().numpy().astype("float32")
 
-        def _embed_text_clip(self, texts):
-            inputs = self.clip_proc(
-                text=texts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-            )
-            with torch.no_grad():
-                feats = self.clip_model.get_text_features(**inputs)
-                feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
-            return feats.detach().cpu().numpy().astype("float32")
+    def _embed_text_clip(self, texts):
+        inputs = self.clip_proc(
+            text=texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+        )
+        with torch.no_grad():
+            feats = self.clip_model.get_text_features(**inputs)
+            feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
+        return feats.detach().cpu().numpy().astype("float32")
 
     def build(self, corpus):
         # Texto
-        text_chunks = [c for c in corpus if c["type"] == "text" and c.get("content", "").strip()]
+        text_chunks = [
+            c for c in corpus if c["type"] == "text" and c.get("content", "").strip()
+        ]
         texts = [c["content"] for c in text_chunks]
         if texts:
             X = self._embed_text(texts)
@@ -139,7 +131,9 @@ class Retriever:
 
         # BM25 para recall lexical
         if self.bm25 is not None:
-            bm = self.bm25.get_top_n(query.split(), [t["content"] for t in self.text_meta], n=3)
+            bm = self.bm25.get_top_n(
+                query.split(), [t["content"] for t in self.text_meta], n=3
+            )
             for b in bm:
                 i = [t["content"] for t in self.text_meta].index(b)
                 out["text"].append({"score": 0.0, **self.text_meta[i], "bm25": True})
