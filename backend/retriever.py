@@ -1,5 +1,5 @@
 import os
-# Blindaje para no enviar tokens de HuggingFace por error
+# Blindaje para no enviar tokens de HF por error
 for k in [
     "HF_TOKEN",
     "HUGGINGFACEHUB_API_TOKEN",
@@ -14,10 +14,10 @@ os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
 import faiss, numpy as np
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
-from pathlib import Path
-import torch
 from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
+from pathlib import Path
+import torch
 
 CACHE_DIR = str(Path("backend/store/hf_cache").absolute())
 
@@ -26,28 +26,22 @@ class Retriever:
     def __init__(self, assets_dir: str):
         self.assets = Path(assets_dir)
 
-        # ---- Embeddings de texto (primero local, luego online) ----
-        model_local_path = Path("backend/models/all-MiniLM-L6-v2")
+        # ---- Embeddings de texto ----
         try:
-            if model_local_path.exists():
-                print(f"[INFO] Cargando modelo local desde {model_local_path}")
-                self.text_model = SentenceTransformer(str(model_local_path))
-            else:
-                print("[INFO] Cargando modelo desde HuggingFace Hub")
-                self.text_model = SentenceTransformer(
-                    "sentence-transformers/all-MiniLM-L6-v2",
-                    cache_folder=CACHE_DIR,
-                    token=None,
-                )
+            self.text_model = SentenceTransformer(
+                "sentence-transformers/all-MiniLM-L6-v2",
+                cache_folder=CACHE_DIR,
+                token=None,
+            )
         except Exception as e:
-            print(f"[ERROR] No se pudo cargar el modelo: {e}")
+            print(f"[ERROR] No se pudo cargar el modelo de texto: {e}")
             raise
 
         self.text_index = None
         self.text_meta = []
         self.bm25 = None
 
-        # ---- CLIP siempre activado para imágenes ----
+        # ---- CLIP para imágenes (siempre activado) ----
         try:
             self.clip_model = CLIPModel.from_pretrained(
                 "openai/clip-vit-base-patch32",
@@ -85,12 +79,7 @@ class Retriever:
         return feats.detach().cpu().numpy().astype("float32")
 
     def _embed_text_clip(self, texts):
-        inputs = self.clip_proc(
-            text=texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-        )
+        inputs = self.clip_proc(text=texts, return_tensors="pt", padding=True, truncation=True)
         with torch.no_grad():
             feats = self.clip_model.get_text_features(**inputs)
             feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
@@ -98,9 +87,7 @@ class Retriever:
 
     def build(self, corpus):
         # Texto
-        text_chunks = [
-            c for c in corpus if c["type"] == "text" and c.get("content", "").strip()
-        ]
+        text_chunks = [c for c in corpus if c["type"] == "text" and c.get("content", "").strip()]
         texts = [c["content"] for c in text_chunks]
         if texts:
             X = self._embed_text(texts)
@@ -118,34 +105,33 @@ class Retriever:
                 self.image_index = faiss.IndexFlatIP(XI.shape[1])
                 self.image_index.add(XI)
                 self.image_meta = images
+                print(f"[DEBUG] Indexadas {len(images)} imágenes en FAISS")
 
     def search(self, query: str, k_text=5, k_img=3):
         out = {"text": [], "images": []}
 
-        # Búsqueda vectorial de texto
+        # Texto
         if self.text_index is not None:
             q = self._embed_text([query])
             D, I = self.text_index.search(q, k_text)
             for d, idx in zip(D[0], I[0]):
                 out["text"].append({"score": float(d), **self.text_meta[idx]})
 
-        # BM25 para recall lexical
+        # BM25
         if self.bm25 is not None:
-            bm = self.bm25.get_top_n(
-                query.split(), [t["content"] for t in self.text_meta], n=3
-            )
+            bm = self.bm25.get_top_n(query.split(), [t["content"] for t in self.text_meta], n=3)
             for b in bm:
                 i = [t["content"] for t in self.text_meta].index(b)
                 out["text"].append({"score": 0.0, **self.text_meta[i], "bm25": True})
 
-        # CLIP texto→imagen
+        # CLIP texto → imagen
         if self.use_images and self.image_index is not None and k_img > 0:
             tq = self._embed_text_clip([query])
             D, I = self.image_index.search(tq, k_img)
             for d, idx in zip(D[0], I[0]):
                 out["images"].append({"score": float(d), **self.image_meta[idx]})
 
-        # Dedupe + limitar
+        # Dedupe
         seen, deduped = set(), []
         for t in out["text"]:
             key = (t["page"], t["content"])
