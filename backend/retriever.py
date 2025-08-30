@@ -20,22 +20,33 @@ from pathlib import Path
 import torch
 
 CACHE_DIR = str(Path("backend/store/hf_cache").absolute())
+MODEL_LOCAL_PATH = Path("backend/models/all-MiniLM-L6-v2")
 
 
 class Retriever:
     def __init__(self, assets_dir: str):
         self.assets = Path(assets_dir)
 
-        # ---- Embeddings de texto ----
+        # ---- Embeddings de texto (primero local, luego HuggingFace Hub) ----
         try:
+            if MODEL_LOCAL_PATH.exists():
+                print(f"[INFO] Cargando modelo local desde {MODEL_LOCAL_PATH}")
+                self.text_model = SentenceTransformer(str(MODEL_LOCAL_PATH))
+            else:
+                print("[INFO] No existe modelo local, usando HuggingFace Hub")
+                self.text_model = SentenceTransformer(
+                    "sentence-transformers/all-MiniLM-L6-v2",
+                    cache_folder=CACHE_DIR,
+                    token=None,
+                )
+        except Exception as e:
+            print(f"[WARN] Error cargando modelo local: {e}")
+            print("[INFO] Reintentando desde HuggingFace Hub")
             self.text_model = SentenceTransformer(
                 "sentence-transformers/all-MiniLM-L6-v2",
                 cache_folder=CACHE_DIR,
                 token=None,
             )
-        except Exception as e:
-            print(f"[ERROR] No se pudo cargar el modelo de texto: {e}")
-            raise
 
         self.text_index = None
         self.text_meta = []
