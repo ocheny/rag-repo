@@ -1,5 +1,6 @@
 FROM python:3.11-slim
 
+# ── Variables de entorno
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
@@ -8,37 +9,30 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TRANSFORMERS_CACHE=/app/backend/store/hf_cache \
     HUGGINGFACE_HUB_CACHE=/app/backend/store/hf_cache \
     HF_HUB_DISABLE_SYMLINKS_WARNING=1 \
-    HF_HUB_ENABLE_HF_TRANSFER=0 \
+    HF_HUB_ENABLE_HF_TRANSFER=0 \ 
     TOKENIZERS_PARALLELISM=false \
     OMP_NUM_THREADS=1
 
-# libs mínimas para pillow/fitz + OCR
+# ── Librerías del sistema (para Pillow, PyMuPDF y OCR)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libgl1 tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# ── Torch CPU 2.6 (evita CUDA y nvidia-*)
+# ── Torch CPU 2.6 (sin CUDA, evita drivers NVIDIA grandes)
 RUN python -m pip install --upgrade pip && \
     pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.6.0+cpu
 
-# ── Resto deps (sin torch)
+# ── Dependencias de Python (sin torch)
 COPY requirements.backend.txt .
 RUN pip install --no-cache-dir -r requirements.backend.txt
 
-# ── Código + modelos locales
+# ── Código fuente
 COPY backend ./backend
 
-# ── Crea la carpeta de cache en build
+# ── Carpeta para cache persistente de modelos (usada con Railway Volumes)
 RUN mkdir -p /app/backend/store/hf_cache
-
-# ── Pre-descargar modelos MiniLM + CLIP
-RUN python -c "from sentence_transformers import SentenceTransformer; \
-       SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', cache_folder='/app/backend/store/hf_cache')" \
-    && python -c "from transformers import CLIPModel, CLIPProcessor; \
-       CLIPModel.from_pretrained('openai/clip-vit-base-patch32', cache_dir='/app/backend/store/hf_cache'); \
-       CLIPProcessor.from_pretrained('openai/clip-vit-base-patch32', cache_dir='/app/backend/store/hf_cache')"
 
 EXPOSE 8080
 CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1
