@@ -13,3 +13,5 @@ groq
 python-dotenv
 requests
 pytesseract
+hf_transfer
+
