@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+
 # Nunca enviar tokens de HF por error
 for k in [
     "HF_TOKEN",
@@ -11,14 +13,19 @@ for k in [
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
 
+# 🔹 Forzar HuggingFace a usar /tmp como caché (gratis en Railway)
+CACHE_DIR = "/tmp/hf_cache"
+os.environ["HF_HOME"] = CACHE_DIR
+os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
+os.environ["HUGGINGFACE_HUB_CACHE"] = CACHE_DIR
+Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
+
 import faiss, numpy as np
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
-from pathlib import Path
 import torch
 
 ENABLE_IMAGES = os.getenv("ENABLE_IMAGES", "1").lower() not in ("0", "false", "no")
-CACHE_DIR = str(Path("backend/store/hf_cache").absolute())
 
 # Carga perezosa de CLIP (solo si ENABLE_IMAGES=1)
 if ENABLE_IMAGES:
