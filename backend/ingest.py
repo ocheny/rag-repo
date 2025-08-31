@@ -8,7 +8,6 @@ from typing import Dict, List
 
 
 def _clean_text(t: str) -> str:
-    # Limpieza suave para evitar basura
     t = t.replace("\x00", " ")
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{2,}", "\n", t)
@@ -17,7 +16,7 @@ def _clean_text(t: str) -> str:
 
 def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str, List[dict]]:
     """
-    Extrae TEXTO (con OCR si es necesario) + IMÁGENES del PDF.
+    Extrae TEXTO (con OCR si es necesario) + IMÁGENES embebidas del PDF.
     Devuelve {"text":[{page,text}], "images":[{page,file}]}.
     """
     doc = fitz.open(pdf_path)
@@ -26,7 +25,7 @@ def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for pno, page in enumerate(doc, start=1):
-        # --- Texto ---
+        # --- TEXTO ---
         text = _clean_text(page.get_text("text") or "")
 
         # fallback por bloques si está vacío
@@ -38,7 +37,7 @@ def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str
                     txt_blocks.append(b[4])
             text = _clean_text("\n".join(txt_blocks))
 
-        # OCR si aún vacío
+        # OCR si sigue vacío
         if not text.strip():
             pix = page.get_pixmap()
             img = Image.open(io.BytesIO(pix.tobytes("png")))
@@ -56,17 +55,17 @@ def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str
 
         out["text"].append({"page": pno, "text": text or ""})
 
-        # --- Imágenes ---
+        # --- IMÁGENES embebidas ---
         for idx, img in enumerate(page.get_images(full=True)):
             try:
                 xref = img[0]
                 pix = fitz.Pixmap(doc, xref)
-                if pix.alpha:  # elimina canal alpha si existe
-                    pix = fitz.Pixmap(pix, 0)
+                if pix.alpha:
+                    pix = fitz.Pixmap(pix, 0)  # elimina canal alpha
                 img_bytes = pix.tobytes("png")
                 fname = f"page{pno}_img{idx+1}.png"
                 (out_dir / fname).write_bytes(img_bytes)
-                # Forzar verificación mínima
+                # Validación mínima
                 Image.open(io.BytesIO(img_bytes)).verify()
                 out["images"].append({"page": pno, "file": fname})
                 if debug:
