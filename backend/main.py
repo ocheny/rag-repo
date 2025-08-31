@@ -23,11 +23,14 @@ app.add_middleware(
 
 DATA = Path("backend/store")
 ASSETS = Path("backend/assets")
+IMAGES = ASSETS / "images"
+
 DATA.mkdir(parents=True, exist_ok=True)
 ASSETS.mkdir(parents=True, exist_ok=True)
+IMAGES.mkdir(parents=True, exist_ok=True)
 
-# Sirve las imágenes extraídas
-app.mount("/images", StaticFiles(directory=str(ASSETS)), name="images")
+# Sirve las imágenes extraídas desde /images
+app.mount("/images", StaticFiles(directory=str(IMAGES)), name="images")
 
 # Estado global simple (memoria del proceso)
 RET: Retriever | None = None
@@ -49,14 +52,14 @@ def _process_pdf(pdf_path: Path, job_id: str):
     global RET, CORPUS
     try:
         JOBS[job_id] = {"status": "running", "detail": "Parsing PDF…"}
-        parsed = extract_pdf(str(pdf_path), str(ASSETS))
+        # ⚠️ Importante: guarda imágenes en la carpeta IMAGES
+        parsed = extract_pdf(str(pdf_path), str(IMAGES))
 
         JOBS[job_id] = {"status": "running", "detail": "Building corpus…"}
         CORPUS = build_corpus(parsed)
 
-        # Crea (o reutiliza) el retriever y construye índices
         if RET is None:
-            RET = Retriever(str(ASSETS))
+            RET = Retriever(str(IMAGES))
         JOBS[job_id] = {"status": "running", "detail": "Indexing embeddings…"}
         RET.build(CORPUS if ENABLE_IMAGES else [c for c in CORPUS if c.get("type") == "text"])
 
@@ -68,10 +71,6 @@ def _process_pdf(pdf_path: Path, job_id: str):
 
 @app.post("/ingest")
 async def ingest(background: BackgroundTasks, pdf: UploadFile = File(...)):
-    """
-    Sube y procesa el PDF en segundo plano para evitar timeouts de Railway.
-    Devuelve un job_id para consultar /status.
-    """
     job_id = uuid4().hex
     pdf_path = DATA / pdf.filename
     pdf_path.write_bytes(await pdf.read())
@@ -83,7 +82,6 @@ async def ingest(background: BackgroundTasks, pdf: UploadFile = File(...)):
 
 @app.get("/status")
 def status(job_id: str):
-    """Consulta el progreso de /ingest (queued|running|done|error)."""
     data = JOBS.get(job_id)
     if not data:
         return {"status": "unknown", "error": "job_id no encontrado"}
@@ -91,14 +89,10 @@ def status(job_id: str):
 
 @app.post("/query")
 async def query(q: str = Form(...), k_text: int = Form(5), k_img: int = Form(3)):
-    """
-    Busca pasajes e imágenes relevantes y responde con Groq + citas.
-    """
     global RET
     if RET is None:
         return {"error": "Primero procesa un PDF en /ingest"}
 
-    # Limita rangos para evitar abusos
     k_text = max(1, min(int(k_text), 10))
     k_img = 0 if not ENABLE_IMAGES else max(0, min(int(k_img), 6))
 
@@ -111,7 +105,8 @@ async def query(q: str = Form(...), k_text: int = Form(5), k_img: int = Form(3))
         "No encontré pasajes de texto relevantes en el documento para responder."
     )
 
-    imgs = [{"page": i["page"], "url": f"/images/{i['file']}", "score": i["score"]} for i in img_hits]
+    # ✅ Devuelve URLs limpias para las imágenes
+    imgs = [{"page": i["page"], "url": f"/images/{Path(i['file']).name}", "score": i["score"]} for i in img_hits]
     cites = [{"page": t["page"], "preview": t["content"][:140] + "…"} for t in text_hits]
 
     return {"answer": answer, "citations": cites, "images": imgs}
