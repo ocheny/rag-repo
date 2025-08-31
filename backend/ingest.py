@@ -3,9 +3,10 @@ import fitz  # PyMuPDF
 from PIL import Image
 import io
 
+
 def extract_pdf(pdf_path: str, out_img_dir: str):
     """
-    Extrae texto por página e imágenes del PDF.
+    Extrae texto e imágenes del PDF.
     Devuelve un dict con listas: text (page,text) e images (page,file).
     """
     doc = fitz.open(pdf_path)
@@ -13,20 +14,20 @@ def extract_pdf(pdf_path: str, out_img_dir: str):
     Path(out_img_dir).mkdir(parents=True, exist_ok=True)
 
     for pno, page in enumerate(doc):
-        # Texto plano por página
+        # Texto por página
         text = page.get_text("text")
         out["text"].append({"page": pno + 1, "text": text})
 
-        # Imágenes de la página
+        # Imágenes
         for idx, img in enumerate(page.get_images(full=True)):
             xref = img[0]
             pix = fitz.Pixmap(doc, xref)
-            if pix.alpha:  # elimina canal alpha si existe
+            if pix.alpha:  # elimina canal alpha
                 pix = fitz.Pixmap(pix, 0)
             img_bytes = pix.tobytes("png")
             fname = f"page{pno+1}_img{idx+1}.png"
             (Path(out_img_dir) / fname).write_bytes(img_bytes)
-            # Asegura que el archivo es válido
+            # validar imagen
             Image.open(io.BytesIO(img_bytes)).verify()
             out["images"].append({"page": pno + 1, "file": fname})
     return out
