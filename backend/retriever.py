@@ -1,10 +1,8 @@
 import os
-# Blindaje para no enviar tokens de HF por error
+# blindaje para no filtrar tokens de HF
 for k in [
-    "HF_TOKEN",
-    "HUGGINGFACEHUB_API_TOKEN",
-    "HUGGING_FACE_HUB_TOKEN",
-    "HUGGINGFACE_HUB_TOKEN",
+    "HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN",
 ]:
     os.environ.pop(k, None)
 
@@ -27,57 +25,48 @@ class Retriever:
     def __init__(self, assets_dir: str):
         self.assets = Path(assets_dir)
 
-        # ---- Embeddings de texto (primero local, luego HuggingFace Hub) ----
+        # Embeddings de texto
         try:
             if MODEL_LOCAL_PATH.exists():
                 print(f"[INFO] Cargando modelo local desde {MODEL_LOCAL_PATH}")
                 self.text_model = SentenceTransformer(str(MODEL_LOCAL_PATH))
             else:
-                print("[INFO] No existe modelo local, usando HuggingFace Hub")
+                print("[INFO] Usando HuggingFace Hub para MiniLM")
                 self.text_model = SentenceTransformer(
                     "sentence-transformers/all-MiniLM-L6-v2",
-                    cache_folder=CACHE_DIR,
-                    token=None,
+                    cache_folder=CACHE_DIR, token=None,
                 )
         except Exception as e:
-            print(f"[WARN] Error cargando modelo local: {e}")
-            print("[INFO] Reintentando desde HuggingFace Hub")
+            print(f"[WARN] Fallback MiniLM: {e}")
             self.text_model = SentenceTransformer(
                 "sentence-transformers/all-MiniLM-L6-v2",
-                cache_folder=CACHE_DIR,
-                token=None,
+                cache_folder=CACHE_DIR, token=None,
             )
 
         self.text_index = None
         self.text_meta = []
         self.bm25 = None
 
-        # ---- CLIP para imágenes (siempre activado) ----
+        # CLIP para imágenes
         try:
             self.clip_model = CLIPModel.from_pretrained(
                 "openai/clip-vit-base-patch32",
-                cache_dir=CACHE_DIR,
-                token=None,
+                cache_dir=CACHE_DIR, token=None,
             )
             self.clip_proc = CLIPProcessor.from_pretrained(
                 "openai/clip-vit-base-patch32",
-                cache_dir=CACHE_DIR,
-                token=None,
+                cache_dir=CACHE_DIR, token=None,
             )
-            self.image_index = None
-            self.image_meta = []
             self.use_images = True
-        except Exception as e:
-            print(f"[WARN] No se pudo cargar CLIP: {e}")
-            self.use_images = False
             self.image_index = None
             self.image_meta = []
+        except Exception as e:
+            print(f"[WARN] CLIP desactivado: {e}")
+            self.use_images = False
 
     def _embed_text(self, texts):
         embs = self.text_model.encode(
-            texts,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
+            texts, normalize_embeddings=True, convert_to_numpy=True
         )
         return embs.astype("float32")
 
@@ -87,17 +76,17 @@ class Retriever:
         with torch.no_grad():
             feats = self.clip_model.get_image_features(**inputs)
             feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
-        return feats.detach().cpu().numpy().astype("float32")
+        return feats.cpu().numpy().astype("float32")
 
     def _embed_text_clip(self, texts):
         inputs = self.clip_proc(text=texts, return_tensors="pt", padding=True, truncation=True)
         with torch.no_grad():
             feats = self.clip_model.get_text_features(**inputs)
             feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
-        return feats.detach().cpu().numpy().astype("float32")
+        return feats.cpu().numpy().astype("float32")
 
     def build(self, corpus):
-        # Texto
+        # texto
         text_chunks = [c for c in corpus if c["type"] == "text" and c.get("content", "").strip()]
         texts = [c["content"] for c in text_chunks]
         if texts:
@@ -107,7 +96,7 @@ class Retriever:
             self.text_meta = text_chunks
             self.bm25 = BM25Okapi([t.split() for t in texts])
 
-        # Imágenes
+        # imágenes
         if self.use_images:
             images = [c for c in corpus if c["type"] == "image"]
             if images:
@@ -121,28 +110,28 @@ class Retriever:
     def search(self, query: str, k_text=5, k_img=3):
         out = {"text": [], "images": []}
 
-        # Texto
+        # texto con embeddings
         if self.text_index is not None:
             q = self._embed_text([query])
             D, I = self.text_index.search(q, k_text)
             for d, idx in zip(D[0], I[0]):
                 out["text"].append({"score": float(d), **self.text_meta[idx]})
 
-        # BM25
+        # bm25
         if self.bm25 is not None:
             bm = self.bm25.get_top_n(query.split(), [t["content"] for t in self.text_meta], n=3)
             for b in bm:
                 i = [t["content"] for t in self.text_meta].index(b)
                 out["text"].append({"score": 0.0, **self.text_meta[i], "bm25": True})
 
-        # CLIP texto → imagen
+        # CLIP texto→imagen
         if self.use_images and self.image_index is not None and k_img > 0:
             tq = self._embed_text_clip([query])
             D, I = self.image_index.search(tq, k_img)
             for d, idx in zip(D[0], I[0]):
                 out["images"].append({"score": float(d), **self.image_meta[idx]})
 
-        # Dedupe
+        # dedupe textos
         seen, deduped = set(), []
         for t in out["text"]:
             key = (t["page"], t["content"])
