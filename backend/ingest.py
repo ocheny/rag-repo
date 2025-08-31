@@ -18,8 +18,9 @@ def _clean_text(t: str) -> str:
 def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str, List[dict]]:
     """
     Extrae TEXTO + IMÁGENES del PDF.
-    Devuelve {"text":[{page,text}], "images":[{page,file}]}
-    Si no hay texto digital, aplica OCR sobre la página.
+    Devuelve {"text":[{page,content}], "images":[{page,file}]}
+    - Usa OCR si no hay texto digital.
+    - Guarda imágenes embebidas y también un render completo por página.
     """
     doc = fitz.open(pdf_path)
     out = {"text": [], "images": []}
@@ -27,11 +28,11 @@ def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for pno, page in enumerate(doc, start=1):
-        # 1) Intento directo
+        # === 1) Extraer texto ===
         text = _clean_text(page.get_text("text") or "")
 
-        # 2) Fallback por bloques
         if not text:
+            # fallback por bloques
             blocks = page.get_text("blocks") or []
             txt_blocks = []
             for b in blocks:
@@ -39,9 +40,9 @@ def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str
                     txt_blocks.append(b[4])
             text = _clean_text("\n".join(txt_blocks))
 
-        # 3) Fallback final con OCR si sigue vacío
         if not text.strip():
-            pix = page.get_pixmap()
+            # fallback final con OCR
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
             img = Image.open(io.BytesIO(pix.tobytes("png")))
             try:
                 text = _clean_text(pytesseract.image_to_string(img, lang="spa+eng"))
@@ -55,9 +56,15 @@ def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str
             preview = text[:200].replace("\n", " ") + ("…" if len(text) > 200 else "")
             print(f"[DEBUG] Página {pno}: '{preview}'")
 
-        out["text"].append({"page": pno, "text": text or ""})
+        out["text"].append({"page": pno, "content": text or ""})
 
-        # Guardar imágenes extraídas
+        # === 2) Guardar render completo de la página ===
+        pix_full = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+        fname_full = f"page{pno}.png"
+        (out_dir / fname_full).write_bytes(pix_full.tobytes("png"))
+        out["images"].append({"page": pno, "file": fname_full})
+
+        # === 3) Guardar imágenes embebidas en la página ===
         for idx, img in enumerate(page.get_images(full=True)):
             xref = img[0]
             pix = fitz.Pixmap(doc, xref)
@@ -96,7 +103,7 @@ def build_corpus(parsed: Dict[str, List[dict]]):
     corpus = []
     # Primero texto
     for item in parsed["text"]:
-        for ch in chunk_text(item.get("text", "")):
+        for ch in chunk_text(item.get("content", "")):
             corpus.append({"type": "text", "page": item["page"], "content": ch})
     # Luego imágenes
     for im in parsed["images"]:
