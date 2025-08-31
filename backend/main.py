@@ -34,7 +34,19 @@ RET: Retriever | None = None
 CORPUS = []
 JOBS: Dict[str, Dict[str, Any]] = {}   # job_id -> {status, detail, result|error}
 
-ENABLE_IMAGES = os.getenv("ENABLE_IMAGES", "1") not in ("0", "false", "False")
+ENABLE_IMAGES = os.getenv("ENABLE_IMAGES", "1").lower() not in ("0", "false", "no")
+
+# 🔹 Forzar inicialización temprana de Retriever para ver logs de CLIP
+try:
+    RET = Retriever(str(ASSETS))
+    print("[INIT] Retriever inicializado correctamente.")
+    if RET.use_images:
+        print("[INIT] CLIP está activado para búsqueda de imágenes.")
+    else:
+        print("[INIT] CLIP está DESACTIVADO.")
+except Exception as e:
+    print(f"[ERROR INIT] No se pudo inicializar Retriever: {e}")
+    RET = None
 
 @app.get("/")
 def root():
