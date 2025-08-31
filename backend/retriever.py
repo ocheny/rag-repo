@@ -1,8 +1,10 @@
 import os
-# blindaje para no filtrar tokens de HF
+# Nunca enviar tokens de HF por error
 for k in [
-    "HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN",
-    "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN",
+    "HF_TOKEN",
+    "HUGGINGFACEHUB_API_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+    "HUGGINGFACE_HUB_TOKEN",
 ]:
     os.environ.pop(k, None)
 
@@ -12,81 +14,100 @@ os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
 import faiss, numpy as np
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
-from transformers import CLIPProcessor, CLIPModel
-from PIL import Image
 from pathlib import Path
 import torch
 
+ENABLE_IMAGES = os.getenv("ENABLE_IMAGES", "1").lower() not in ("0", "false", "no")
 CACHE_DIR = str(Path("backend/store/hf_cache").absolute())
-MODEL_LOCAL_PATH = Path("backend/models/all-MiniLM-L6-v2")
+
+# Carga perezosa de CLIP (solo si ENABLE_IMAGES=1)
+if ENABLE_IMAGES:
+    from transformers import CLIPProcessor, CLIPModel
+    from PIL import Image
 
 
 class Retriever:
     def __init__(self, assets_dir: str):
         self.assets = Path(assets_dir)
 
-        # Embeddings de texto
+        # ---- Embeddings de texto (primero local, luego online) ----
+        model_local_path = Path("backend/models/all-MiniLM-L6-v2")
         try:
-            if MODEL_LOCAL_PATH.exists():
-                print(f"[INFO] Cargando modelo local desde {MODEL_LOCAL_PATH}")
-                self.text_model = SentenceTransformer(str(MODEL_LOCAL_PATH))
+            if model_local_path.exists():
+                print(f"[INFO] Cargando modelo local desde {model_local_path}")
+                self.text_model = SentenceTransformer(str(model_local_path))
             else:
-                print("[INFO] Usando HuggingFace Hub para MiniLM")
+                print("[INFO] Cargando modelo desde HuggingFace Hub")
                 self.text_model = SentenceTransformer(
                     "sentence-transformers/all-MiniLM-L6-v2",
-                    cache_folder=CACHE_DIR, token=None,
+                    cache_folder=CACHE_DIR,
+                    token=None,
                 )
         except Exception as e:
-            print(f"[WARN] Fallback MiniLM: {e}")
-            self.text_model = SentenceTransformer(
-                "sentence-transformers/all-MiniLM-L6-v2",
-                cache_folder=CACHE_DIR, token=None,
-            )
+            print(f"[ERROR] No se pudo cargar el modelo: {e}")
+            raise
 
         self.text_index = None
         self.text_meta = []
         self.bm25 = None
 
-        # CLIP para imágenes
-        try:
-            self.clip_model = CLIPModel.from_pretrained(
-                "openai/clip-vit-base-patch32",
-                cache_dir=CACHE_DIR, token=None,
-            )
-            self.clip_proc = CLIPProcessor.from_pretrained(
-                "openai/clip-vit-base-patch32",
-                cache_dir=CACHE_DIR, token=None,
-            )
-            self.use_images = True
+        # ---- CLIP para imágenes (solo si está activado) ----
+        self.use_images = ENABLE_IMAGES
+        if self.use_images:
+            try:
+                self.clip_model = CLIPModel.from_pretrained(
+                    "openai/clip-vit-base-patch32",
+                    cache_dir=CACHE_DIR,
+                    token=None,
+                )
+                self.clip_proc = CLIPProcessor.from_pretrained(
+                    "openai/clip-vit-base-patch32",
+                    cache_dir=CACHE_DIR,
+                    token=None,
+                )
+                self.image_index = None
+                self.image_meta = []
+            except Exception as e:
+                print(f"[WARN] No se pudo cargar CLIP: {e}")
+                self.use_images = False
+                self.image_index = None
+                self.image_meta = []
+        else:
             self.image_index = None
             self.image_meta = []
-        except Exception as e:
-            print(f"[WARN] CLIP desactivado: {e}")
-            self.use_images = False
 
     def _embed_text(self, texts):
         embs = self.text_model.encode(
-            texts, normalize_embeddings=True, convert_to_numpy=True
+            texts,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
         )
         return embs.astype("float32")
 
-    def _embed_image_paths(self, paths):
-        images = [Image.open(self.assets / p).convert("RGB") for p in paths]
-        inputs = self.clip_proc(images=images, return_tensors="pt")
-        with torch.no_grad():
-            feats = self.clip_model.get_image_features(**inputs)
-            feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
-        return feats.cpu().numpy().astype("float32")
+    # Métodos de imagen solo si está activado
+    if ENABLE_IMAGES:
+        def _embed_image_paths(self, paths):
+            images = [Image.open(self.assets / p).convert("RGB") for p in paths]
+            inputs = self.clip_proc(images=images, return_tensors="pt")
+            with torch.no_grad():
+                feats = self.clip_model.get_image_features(**inputs)
+                feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
+            return feats.detach().cpu().numpy().astype("float32")
 
-    def _embed_text_clip(self, texts):
-        inputs = self.clip_proc(text=texts, return_tensors="pt", padding=True, truncation=True)
-        with torch.no_grad():
-            feats = self.clip_model.get_text_features(**inputs)
-            feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
-        return feats.cpu().numpy().astype("float32")
+        def _embed_text_clip(self, texts):
+            inputs = self.clip_proc(
+                text=texts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+            )
+            with torch.no_grad():
+                feats = self.clip_model.get_text_features(**inputs)
+                feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
+            return feats.detach().cpu().numpy().astype("float32")
 
     def build(self, corpus):
-        # texto
+        # Texto
         text_chunks = [c for c in corpus if c["type"] == "text" and c.get("content", "").strip()]
         texts = [c["content"] for c in text_chunks]
         if texts:
@@ -96,7 +117,7 @@ class Retriever:
             self.text_meta = text_chunks
             self.bm25 = BM25Okapi([t.split() for t in texts])
 
-        # imágenes
+        # Imágenes
         if self.use_images:
             images = [c for c in corpus if c["type"] == "image"]
             if images:
@@ -105,19 +126,18 @@ class Retriever:
                 self.image_index = faiss.IndexFlatIP(XI.shape[1])
                 self.image_index.add(XI)
                 self.image_meta = images
-                print(f"[DEBUG] Indexadas {len(images)} imágenes en FAISS")
 
     def search(self, query: str, k_text=5, k_img=3):
         out = {"text": [], "images": []}
 
-        # texto con embeddings
+        # Búsqueda vectorial de texto
         if self.text_index is not None:
             q = self._embed_text([query])
             D, I = self.text_index.search(q, k_text)
             for d, idx in zip(D[0], I[0]):
                 out["text"].append({"score": float(d), **self.text_meta[idx]})
 
-        # bm25
+        # BM25 para recall lexical
         if self.bm25 is not None:
             bm = self.bm25.get_top_n(query.split(), [t["content"] for t in self.text_meta], n=3)
             for b in bm:
@@ -131,7 +151,7 @@ class Retriever:
             for d, idx in zip(D[0], I[0]):
                 out["images"].append({"score": float(d), **self.image_meta[idx]})
 
-        # dedupe textos
+        # Dedupe + limitar
         seen, deduped = set(), []
         for t in out["text"]:
             key = (t["page"], t["content"])
