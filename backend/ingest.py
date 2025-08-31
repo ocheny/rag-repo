@@ -2,53 +2,103 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from PIL import Image
 import io
+import re
+from typing import Dict, List
+import pytesseract
 
 
-def extract_pdf(pdf_path: str, out_img_dir: str):
+def _clean_text(t: str) -> str:
+    # Limpieza suave para evitar basura y huecos
+    t = t.replace("\x00", " ")
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n{2,}", "\n", t)
+    return t.strip()
+
+
+def extract_pdf(pdf_path: str, out_img_dir: str, debug: bool = True) -> Dict[str, List[dict]]:
     """
-    Extrae texto e imágenes del PDF.
-    Devuelve un dict con listas: text (page,text) e images (page,file).
+    Extrae TEXTO + IMÁGENES del PDF.
+    Devuelve {"text":[{page,text}], "images":[{page,file}]}
+    Si no hay texto digital, aplica OCR sobre la página.
     """
     doc = fitz.open(pdf_path)
     out = {"text": [], "images": []}
-    Path(out_img_dir).mkdir(parents=True, exist_ok=True)
+    out_dir = Path(out_img_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    for pno, page in enumerate(doc):
-        # Texto por página
-        text = page.get_text("text")
-        out["text"].append({"page": pno + 1, "text": text})
+    for pno, page in enumerate(doc, start=1):
+        # 1) Intento directo
+        text = _clean_text(page.get_text("text") or "")
 
-        # Imágenes
+        # 2) Fallback por bloques
+        if not text:
+            blocks = page.get_text("blocks") or []
+            txt_blocks = []
+            for b in blocks:
+                if len(b) >= 5 and isinstance(b[4], str):
+                    txt_blocks.append(b[4])
+            text = _clean_text("\n".join(txt_blocks))
+
+        # 3) Fallback final con OCR si sigue vacío
+        if not text.strip():
+            pix = page.get_pixmap()
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            try:
+                text = _clean_text(pytesseract.image_to_string(img, lang="spa+eng"))
+                if debug:
+                    print(f"[OCR] Página {pno}: {len(text)} caracteres extraídos")
+            except Exception as e:
+                print(f"[WARN] OCR falló en página {pno}: {e}")
+                text = ""
+
+        if debug:
+            preview = text[:200].replace("\n", " ") + ("…" if len(text) > 200 else "")
+            print(f"[DEBUG] Página {pno}: '{preview}'")
+
+        out["text"].append({"page": pno, "text": text or ""})
+
+        # Guardar imágenes extraídas
         for idx, img in enumerate(page.get_images(full=True)):
             xref = img[0]
             pix = fitz.Pixmap(doc, xref)
-            if pix.alpha:  # elimina canal alpha
+            if pix.alpha:  # elimina canal alpha si existe
                 pix = fitz.Pixmap(pix, 0)
             img_bytes = pix.tobytes("png")
-            fname = f"page{pno+1}_img{idx+1}.png"
-            (Path(out_img_dir) / fname).write_bytes(img_bytes)
-            # validar imagen
-            Image.open(io.BytesIO(img_bytes)).verify()
-            out["images"].append({"page": pno + 1, "file": fname})
+            fname = f"page{pno}_img{idx+1}.png"
+            (out_dir / fname).write_bytes(img_bytes)
+            # verificación rápida
+            try:
+                Image.open(io.BytesIO(img_bytes)).verify()
+            except Exception:
+                print(f"[WARN] Imagen corrupta en página {pno}")
+            out["images"].append({"page": pno, "file": fname})
+
+    doc.close()
     return out
 
 
 def chunk_text(text: str, chunk_size=800, overlap=100):
+    # Chunking por PALABRAS (robusto a idiomas); evita trozos vacíos
     words = text.split()
+    if not words:
+        return []
     chunks, i = [], 0
+    step = max(1, chunk_size - overlap)
     while i < len(words):
-        chunk = " ".join(words[i:i+chunk_size])
+        chunk = " ".join(words[i:i + chunk_size])
         if chunk.strip():
             chunks.append(chunk)
-        i += max(1, chunk_size - overlap)
+        i += step
     return chunks
 
 
-def build_corpus(parsed):
+def build_corpus(parsed: Dict[str, List[dict]]):
     corpus = []
+    # Primero texto
     for item in parsed["text"]:
-        for ch in chunk_text(item["text"]):
+        for ch in chunk_text(item.get("text", "")):
             corpus.append({"type": "text", "page": item["page"], "content": ch})
+    # Luego imágenes
     for im in parsed["images"]:
         corpus.append({"type": "image", "page": im["page"], "file": im["file"]})
     return corpus
